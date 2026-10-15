@@ -1,0 +1,7 @@
+spring:
+  application:
+    name: product-service
+
+server:
+  # Not 8080: that belongs to order-service, and both should be able to run at once.
+  port: 8081
