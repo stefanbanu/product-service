@@ -2,29 +2,33 @@ package com.banu.productservice.controller;
 
 import static org.hamcrest.Matchers.hasKey;
 import static org.hamcrest.Matchers.not;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.jayway.jsonpath.JsonPath;
 import java.net.URI;
 import org.junit.jupiter.api.Test;
-import org.springframework.http.HttpHeaders;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 // Boot 4 package: the Boot 3 home was org.springframework.boot.test.autoconfigure.web.servlet.
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Drives POST /products through the real stack - validation, the service, Spring Data JDBC,
- * the Liquibase-created table - rather than a mocked service, because the parts worth
- * covering here are exactly the ones a mock would hide: that {@code @Valid} is wired, that
- * the identity column and auditing fill in id and createdAt, and that the row is readable
- * afterwards.
+ * Drives every /products endpoint through the real stack - validation, the service, Spring
+ * Data JDBC, the Liquibase-created table - rather than a mocked service, because the parts
+ * worth covering here are exactly the ones a mock would hide: that {@code @Valid} is wired,
+ * that the identity column and auditing fill in id and createdAt, and that a write is
+ * visible to the next read.
  *
  * <p>{@code @Transactional} rolls every test back. The in-memory database is shared with
  * {@link com.banu.productservice.repository.ProductRepositoryTest}, which asserts an exact
@@ -123,6 +127,109 @@ class ProductControllerTest {
                 .andExpect(jsonPath("$.title").value("Invalid request"))
                 .andExpect(jsonPath("$.errors").value(hasKey("name")))
                 .andExpect(jsonPath("$.errors").value(hasKey("price")));
+    }
+
+    @Test
+    void updateReplacesNameAndPrice() throws Exception {
+        mockMvc.perform(put("/products/1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Mechanical Keyboard MkII\", \"price\": 149.99}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(1))
+                .andExpect(jsonPath("$.name").value("Mechanical Keyboard MkII"))
+                .andExpect(jsonPath("$.price").value(149.99));
+
+        mockMvc.perform(get("/products/1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("Mechanical Keyboard MkII"))
+                .andExpect(jsonPath("$.price").value(149.99));
+    }
+
+    /**
+     * createdAt belongs to the row, not the request. The update loads the entity before
+     * saving it precisely so this value survives; building a fresh Product with the id set
+     * would null it and hit the column's NOT NULL constraint.
+     */
+    @Test
+    void updatePreservesCreatedAt() throws Exception {
+        String before = mockMvc.perform(get("/products/1"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String createdAt = JsonPath.parse(before).read("$.createdAt", String.class);
+
+        mockMvc.perform(put("/products/1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Renamed\", \"price\": 1.00}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.createdAt").value(createdAt));
+    }
+
+    @Test
+    void updateReturns404ForAnUnknownId() throws Exception {
+        mockMvc.perform(put("/products/999999")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Nothing\", \"price\": 1.00}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.title").value("Product not found"))
+                .andExpect(jsonPath("$.detail").value("No product with id 999999"));
+    }
+
+    /** PUT replaces, so a missing price is a validation failure rather than "keep the old one". */
+    @Test
+    void updateRejectsAPartialPayload() throws Exception {
+        mockMvc.perform(put("/products/1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Only a name\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors").value(hasKey("price")));
+    }
+
+    /** No row may be added by an update, whatever the payload claims. */
+    @Test
+    void updateDoesNotChangeTheRowCount() throws Exception {
+        mockMvc.perform(put("/products/2")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"id\": 999, \"name\": \"Renamed\", \"price\": 2.00}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(2));
+
+        mockMvc.perform(get("/products"))
+                .andExpect(jsonPath("$.length()").value(10));
+    }
+
+    @Test
+    void deleteRemovesTheProduct() throws Exception {
+        mockMvc.perform(delete("/products/4"))
+                .andExpect(status().isNoContent())
+                .andExpect(content().string(""));
+
+        mockMvc.perform(get("/products/4"))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(get("/products"))
+                .andExpect(jsonPath("$.length()").value(9));
+    }
+
+    @Test
+    void deleteReturns404ForAnUnknownId() throws Exception {
+        mockMvc.perform(delete("/products/999999"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.title").value("Product not found"))
+                .andExpect(jsonPath("$.detail").value("No product with id 999999"));
+    }
+
+    /**
+     * Pins the deliberate asymmetry documented on the endpoint: the row is gone either way,
+     * but the status code is not idempotent on replay.
+     */
+    @Test
+    void deleteTwiceReturns204ThenNotFound() throws Exception {
+        mockMvc.perform(delete("/products/6"))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(delete("/products/6"))
+                .andExpect(status().isNotFound());
     }
 
     /**
