@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      Standalone on purpose: the pom one directory up is the Spring Boot app itself
+      (packaging jar), so it cannot aggregate this directory as a <module>. Nothing
+      inherits from there either, which is why versions and the Java release are
+      spelled out below instead of coming from spring-boot-starter-parent.
+      Build it explicitly: mvn -f liquibase/pom.xml <goal>.
+    -->
+    <groupId>com.banu</groupId>
+    <artifactId>product-service-liquibase</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>product-service-liquibase</name>
+    <description>Liquibase database migrations for product-service</description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>25</maven.compiler.release>
+        <liquibase.version>5.0.4</liquibase.version>
+        <h2.version>2.5.252</h2.version>
+
+        <!--
+          Plugin connection settings, kept as properties so any of them can be pointed at
+          another database from the command line (-Dliquibase.url=...) without touching the
+          pom. The names are the plugin's own parameter expressions, so these also act as
+          the defaults it picks up.
+
+          The default target is a local H2 file under this module's target/, i.e. mvn clean
+          throws the database away and the next update replays every changeSet from scratch.
+          That is what you want for a scratch dev database; point the url elsewhere for
+          anything whose contents should survive a build.
+
+          The path is absolute via ${project.basedir} rather than a relative ./target/...:
+          H2 resolves a relative file url against the JVM's working directory, so the
+          relative form put the database wherever mvn happened to be invoked from - the
+          parent project's target/ when run as `mvn -f liquibase/pom.xml` from the repo root.
+        -->
+        <liquibase.url>jdbc:h2:file:${project.basedir}/target/h2/productdb</liquibase.url>
+        <liquibase.driver>org.h2.Driver</liquibase.driver>
+        <liquibase.username>sa</liquibase.username>
+        <liquibase.password/>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.liquibase</groupId>
+            <artifactId>liquibase-core</artifactId>
+            <version>${liquibase.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>${h2.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.liquibase</groupId>
+                <artifactId>liquibase-maven-plugin</artifactId>
+                <!--
+                  Pinned to the same version as liquibase-core above: the plugin bundles its
+                  own copy of core, and letting the two drift is how you get changelog
+                  parsing differences between `mvn liquibase:update` and anything embedding
+                  the library.
+
+                  Bound to no lifecycle phase on purpose - migrations run when someone asks
+                  (mvn -f liquibase/pom.xml liquibase:update), not as a side effect of a build.
+                -->
+                <version>${liquibase.version}</version>
+                <configuration>
+                    <!--
+                      searchPath is spelled out because the plugin's default search path is
+                      the module root plus its dependency jars - it does NOT include
+                      src/main/resources or target/classes, so without this the changelog
+                      "was not found in the configured search path". Pointing it at the
+                      sources rather than target/classes also means the goals work without a
+                      preceding resource-processing build.
+
+                      changeLogFile stays relative to that search path; includeAll inside the
+                      master changelog resolves against it too, which is why it is declared
+                      there with relativeToChangelogFile="false".
+                    -->
+                    <searchPath>${project.basedir}/src/main/resources</searchPath>
+                    <changeLogFile>db/changelog/db.changelog-master.xml</changeLogFile>
+                    <url>${liquibase.url}</url>
+                    <driver>${liquibase.driver}</driver>
+                    <username>${liquibase.username}</username>
+                    <password>${liquibase.password}</password>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

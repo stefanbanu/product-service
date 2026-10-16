@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!--
+      The only changelog the Maven plugin is pointed at. It holds no changeSets of its
+      own: every change goes into its own file under changes/ and is picked up here by
+      includeAll, which orders files by name - hence the numeric NNN- prefixes. Appending
+      rather than renumbering keeps already-applied checksums stable.
+    -->
+    <includeAll path="db/changelog/changes" relativeToChangelogFile="false"/>
+
+</databaseChangeLog>
