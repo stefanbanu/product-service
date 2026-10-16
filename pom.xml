@@ -34,18 +34,63 @@
     </scm>
     <properties>
         <java.version>25</java.version>
+        <!--
+          Both are spring-boot-dependencies' own property names, so setting them here
+          overrides the BOM: Boot 4.1.1 manages liquibase 5.0.3 and h2 2.4.240, while
+          liquibase/pom.xml is on 5.0.4 and 2.5.252. The two have to agree - the module and
+          this app run the same changelog against the same database, and the schema is
+          written in H2-specific SQL. Bump them together or not at all.
+        -->
+        <liquibase.version>5.0.4</liquibase.version>
+        <h2.version>2.5.252</h2.version>
     </properties>
     <dependencies>
         <!--
           Boot 4 split the umbrella starters apart, so these coordinates look wrong to
           anyone used to Boot 3: webmvc is the old -web, and each slice has its own -test
           starter rather than one spring-boot-starter-test. Renaming them to the Boot 3
-          form breaks the build. There is deliberately no data-jpa and no database driver
-          here: storage is the in-memory map in repository/InMemoryProductRepository.
+          form breaks the build.
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+        <!--
+          Spring Data JDBC, not JPA: there is no Hibernate here and no schema generation, so
+          the table shape is whatever liquibase/ says it is and nothing else.
+
+          spring-boot-liquibase is the Boot 4 home of LiquibaseAutoConfiguration - in Boot 3
+          that lived in spring-boot-autoconfigure and liquibase-core alone was enough to
+          switch it on. It pulls liquibase-core in transitively, which is why there is no
+          direct org.liquibase dependency below.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-liquibase</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <!--
+          The H2 web console, the only way to look inside an in-memory database while the app
+          holds it open. Boot 4 moved H2ConsoleAutoConfiguration out of
+          spring-boot-autoconfigure into this module, so in Boot 3 the h2 dependency above
+          plus the enabled property was enough and here it is not.
+
+          Runtime scope: nothing compiles against it. It is still gated by
+          spring.h2.console.enabled in application.yaml - see the warning there before
+          enabling this anywhere but a developer machine.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-h2console</artifactId>
+            <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -74,6 +119,45 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <!--
+                  Puts liquibase/'s changelogs on this app's classpath, so
+                  spring.liquibase.change-log can be a plain classpath: location and a single
+                  ./mvnw spring-boot:run is enough. The liquibase module is a standalone
+                  project, not a <module> of this pom (this one is packaging jar and cannot
+                  aggregate), so depending on its artifact would mean installing it first -
+                  a fresh clone would not build.
+
+                  Why copy-resources rather than a second <resource> directory: declaring
+                  <resources> here REPLACES the block spring-boot-starter-parent defines, and
+                  that block is what filters application*.yaml with @..@ delimiters. Losing
+                  it silently breaks any @project.version@ placeholder added later. This
+                  leaves the parent's block alone and copies the one extra tree on top.
+
+                  Bound to process-resources, so target/classes is populated before both
+                  the jar and the test classpath see it.
+                -->
+                <executions>
+                    <execution>
+                        <id>copy-liquibase-changelog</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>${project.basedir}/liquibase/src/main/resources</directory>
+                                    <filtering>false</filtering>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

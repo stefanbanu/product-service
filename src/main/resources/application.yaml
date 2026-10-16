@@ -2,6 +2,48 @@ spring:
   application:
     name: product-service
 
+  datasource:
+    # In-memory, so every boot starts from an empty database and Liquibase replays the whole
+    # changelog, seed products included. Nothing written through the API survives a restart.
+    #
+    # DB_CLOSE_DELAY=-1 is what keeps that database alive: without it H2 discards an in-memory
+    # database the moment the last connection closes, which happens between Liquibase
+    # finishing and the pool handing out the first request connection - the table would be
+    # gone by the time anything queried it.
+    #
+    # CASE_INSENSITIVE_IDENTIFIERS=TRUE reconciles two conventions that otherwise do not
+    # meet: the changelog says CREATE TABLE product unquoted, which H2 folds to PRODUCT,
+    # while Spring Data JDBC emits every identifier quoted - SELECT ... FROM "product" -
+    # and a quoted lowercase name does not match a folded uppercase one. Without this the
+    # table exists and every query still fails with 'Table "product" not found'. The
+    # alternative is naming the entity @Table("PRODUCT"), which would then break on
+    # PostgreSQL, where unquoted names fold the other way.
+    url: jdbc:h2:mem:productdb;DB_CLOSE_DELAY=-1;CASE_INSENSITIVE_IDENTIFIERS=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  h2:
+    console:
+      # Browse to http://localhost:8081/h2-console and connect with the JDBC URL, user and
+      # (empty) password from spring.datasource above - the login form defaults to
+      # jdbc:h2:~/test, and connecting with that instead quietly opens a different, empty
+      # database rather than failing. Same JVM, same in-memory database, so the ten seeded
+      # rows are there: SELECT * FROM product.
+      #
+      # Only ever true for local development. This console is an unauthenticated SQL prompt
+      # against the application's own datasource; it has no place in a deployed service.
+      # Move it to an application-dev.yaml if this app ever grows profiles.
+      enabled: true
+      path: /h2-console
+
+  liquibase:
+    # The schema's single source of truth, copied onto this app's classpath from
+    # liquibase/src/main/resources by the maven-resources-plugin execution in pom.xml.
+    # Spring Data JDBC never generates DDL, so this file is the only thing that creates the
+    # product table.
+    change-log: classpath:db/changelog/db.changelog-master.xml
+
 server:
   # Not 8080: that belongs to order-service, and both should be able to run at once.
   port: 8081

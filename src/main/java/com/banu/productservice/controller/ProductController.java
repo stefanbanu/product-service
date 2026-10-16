@@ -9,8 +9,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The one endpoint this skeleton ships with: an empty 200 until something creates a
- * product.
+ * The one endpoint this skeleton ships with: a 200 listing whatever is in the product
+ * table, which on a fresh boot is the ten rows seeded by the liquibase module's
+ * 002-insert-products.sql.
  *
  * <p>When POST arrives, give it its own request DTO without id or createdAt -- the absence
  * of those fields is what makes them unsettable by a client -- and annotate the parameter
