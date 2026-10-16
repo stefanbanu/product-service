@@ -21,27 +21,6 @@
         <maven.compiler.release>25</maven.compiler.release>
         <liquibase.version>5.0.4</liquibase.version>
         <h2.version>2.5.252</h2.version>
-
-        <!--
-          Plugin connection settings, kept as properties so any of them can be pointed at
-          another database from the command line (-Dliquibase.url=...) without touching the
-          pom. The names are the plugin's own parameter expressions, so these also act as
-          the defaults it picks up.
-
-          The default target is a local H2 file under this module's target/, i.e. mvn clean
-          throws the database away and the next update replays every changeSet from scratch.
-          That is what you want for a scratch dev database; point the url elsewhere for
-          anything whose contents should survive a build.
-
-          The path is absolute via ${project.basedir} rather than a relative ./target/...:
-          H2 resolves a relative file url against the JVM's working directory, so the
-          relative form put the database wherever mvn happened to be invoked from - the
-          parent project's target/ when run as `mvn -f liquibase/pom.xml` from the repo root.
-        -->
-        <liquibase.url>jdbc:h2:file:${project.basedir}/target/h2/productdb</liquibase.url>
-        <liquibase.driver>org.h2.Driver</liquibase.driver>
-        <liquibase.username>sa</liquibase.username>
-        <liquibase.password/>
     </properties>
 
     <dependencies>
@@ -74,23 +53,25 @@
                 <version>${liquibase.version}</version>
                 <configuration>
                     <!--
-                      searchPath is spelled out because the plugin's default search path is
-                      the module root plus its dependency jars - it does NOT include
-                      src/main/resources or target/classes, so without this the changelog
-                      "was not found in the configured search path". Pointing it at the
-                      sources rather than target/classes also means the goals work without a
-                      preceding resource-processing build.
+                      The last two settings that cannot live in liquibase.properties, which
+                      holds everything else - url, credentials, changeLogFile.
 
-                      changeLogFile stays relative to that search path; includeAll inside the
-                      master changelog resolves against it too, which is why it is declared
-                      there with relativeToChangelogFile="false".
+                      searchPath has to be here because the plugin resolves the property file
+                      itself through the search path: configuring it in that file would be
+                      circular. Two entries, because two different things are looked up
+                      through it - src/main/resources for the changelogs (the plugin's default
+                      search path is the module root plus its dependency jars, so without
+                      this the changelog "was not found in the configured search path"), and
+                      the module root for liquibase.properties. Pointing at the sources rather
+                      than target/classes keeps the goals working without a preceding
+                      resource-processing build.
+
+                      changeLogFile, set in the property file, stays relative to this search
+                      path; includeAll inside the master changelog resolves against it too,
+                      which is why it is declared there with relativeToChangelogFile="false".
                     -->
-                    <searchPath>${project.basedir}/src/main/resources</searchPath>
-                    <changeLogFile>db/changelog/db.changelog-master.xml</changeLogFile>
-                    <url>${liquibase.url}</url>
-                    <driver>${liquibase.driver}</driver>
-                    <username>${liquibase.username}</username>
-                    <password>${liquibase.password}</password>
+                    <searchPath>${project.basedir}/src/main/resources,${project.basedir}</searchPath>
+                    <propertyFile>liquibase.properties</propertyFile>
                 </configuration>
             </plugin>
         </plugins>
