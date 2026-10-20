@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
+import org.springframework.data.annotation.Version;
 import org.springframework.data.relational.core.mapping.Table;
 
 /**
@@ -53,4 +54,22 @@ public class Product {
      */
     @CreatedDate
     private Instant createdAt;
+
+    /**
+     * The optimistic locking counter. Spring Data JDBC maintains it: every UPDATE carries
+     * {@code WHERE id = ? AND version = ?} and increments the stored value, and an update
+     * that matches no row raises OptimisticLockingFailureException rather than reporting
+     * success.
+     *
+     * <p>It also changes how new-ness is decided. Without a version property that is "id is
+     * null"; with one, Spring Data treats a null OR ZERO version as a new aggregate and
+     * issues an INSERT. That is why 003-add-product-version.sql backfills existing rows with
+     * 1 rather than 0, and why nothing should ever set this to 0 by hand.
+     *
+     * <p>Not exposed on {@link com.banu.productservice.dto.ProductResponse}: it reaches
+     * clients as an ETag header instead, which keeps a bookkeeping integer out of the API's
+     * data model.
+     */
+    @Version
+    private Long version;
 }

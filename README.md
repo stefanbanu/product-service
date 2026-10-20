@@ -23,10 +23,10 @@ deliberate — the service builds, runs and tests with no database to install.
 | Method | Path | Success | Failures |
 |---|---|---|---|
 | `GET` | `/products` | `200` array | — |
-| `GET` | `/products/{id}` | `200` | `404` unknown id · `400` unbindable id |
-| `POST` | `/products` | `201` + `Location` + body | `400` with a per-field `errors` map |
-| `PUT` | `/products/{id}` | `200` | `404` · `400` |
-| `DELETE` | `/products/{id}` | `204` empty | `404` |
+| `GET` | `/products/{id}` | `200` + `ETag` | `404` unknown id · `400` unbindable id |
+| `POST` | `/products` | `201` + `Location` + `ETag` + body | `400` with a per-field `errors` map |
+| `PUT` | `/products/{id}` | `200` + new `ETag` | `404` · `400` · `412` stale · `428` no `If-Match` |
+| `DELETE` | `/products/{id}` | `204` empty | `404` · `412` if a stale `If-Match` is sent |
 
 ```bash
 curl localhost:8081/products
@@ -55,8 +55,47 @@ Three decisions worth knowing before you file a bug against them:
 - **`DELETE` answers `404` on replay.** The first call is `204`, a repeat is `404`. The
   server-side effect is idempotent either way; answering `204` unconditionally would report
   success for a typo'd id.
-- **No optimistic locking.** No version column, so two concurrent updates are
-  last-write-wins. Adding `@Version` means a changeSet for the column.
+- **`PUT` requires `If-Match`.** See below. An unconditional update is refused with `428`.
+
+## Concurrent edits: ETag and If-Match
+
+Every single-product response carries an `ETag` holding the row's version, and `PUT`
+requires it back in `If-Match`. Without that, two people editing the same product would
+both get `200` and the first edit would vanish silently — `PUT` is a full replacement, so
+the second writer sends back the stale fields it read.
+
+```bash
+# read, and keep the ETag
+curl -i localhost:8081/products/5 | grep -i etag          # ETag: "2"
+
+# write, asserting nothing has changed since
+curl -i -X PUT localhost:8081/products/5 -H 'If-Match: "2"' \
+  -H 'Content-Type: application/json' -d '{"name":"Headset","price":249.00}'
+                                                           # 200, ETag: "3"
+
+# anyone still holding "2" now gets refused
+curl -X PUT localhost:8081/products/5 -H 'If-Match: "2"' \
+  -H 'Content-Type: application/json' -d '{"name":"Headset Pro","price":279.00}'
+                                                           # 412 Precondition failed
+```
+
+| Situation | Status |
+|---|---|
+| `If-Match` matches the current version | `200` + the next `ETag` |
+| `If-Match` is stale | `412 Precondition Failed` |
+| No `If-Match` at all | `428 Precondition Required` |
+| `If-Match: *` | asserts only that the row exists |
+
+`412` rather than `409` because the client stated its expectation as an HTTP precondition;
+`409` would be right if the version travelled in the request body. The version is **not** a
+field on `ProductResponse` — it is transport metadata, and HTTP already has a header for it.
+
+The enforcement is the database's, not this code's: the expected version is written onto the
+loaded entity, so Spring Data issues `UPDATE ... WHERE id = ? AND version = ?` and a stale
+value matches no row. Comparing versions in Java would be a check-then-act with a window
+between the read and the write.
+
+`DELETE` honours `If-Match` when sent but does not require it.
 
 ## Looking inside the database
 
@@ -131,7 +170,7 @@ The SQL is H2-specific.
 ./mvnw test
 ```
 
-19 tests. The controller and repository tests run against the real context, datasource and
+24 tests. The controller and repository tests run against the real context, datasource and
 Liquibase-created table rather than mocks — the wiring is the part worth covering. They are
 `@Transactional` and roll back, because they share one in-memory database and the repository
 test asserts an exact row count.

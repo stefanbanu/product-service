@@ -1,5 +1,6 @@
 package com.banu.productservice.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasKey;
 import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -132,6 +133,7 @@ class ProductControllerTest {
     @Test
     void updateReplacesNameAndPrice() throws Exception {
         mockMvc.perform(put("/products/1")
+                        .header(HttpHeaders.IF_MATCH, etagOf(1))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\": \"Mechanical Keyboard MkII\", \"price\": 149.99}"))
                 .andExpect(status().isOk())
@@ -159,6 +161,7 @@ class ProductControllerTest {
         String createdAt = JsonPath.parse(before).read("$.createdAt", String.class);
 
         mockMvc.perform(put("/products/1")
+                        .header(HttpHeaders.IF_MATCH, etagOf(1))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\": \"Renamed\", \"price\": 1.00}"))
                 .andExpect(status().isOk())
@@ -168,6 +171,7 @@ class ProductControllerTest {
     @Test
     void updateReturns404ForAnUnknownId() throws Exception {
         mockMvc.perform(put("/products/999999")
+                        .header(HttpHeaders.IF_MATCH, "\"1\"")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\": \"Nothing\", \"price\": 1.00}"))
                 .andExpect(status().isNotFound())
@@ -179,6 +183,7 @@ class ProductControllerTest {
     @Test
     void updateRejectsAPartialPayload() throws Exception {
         mockMvc.perform(put("/products/1")
+                        .header(HttpHeaders.IF_MATCH, etagOf(1))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\": \"Only a name\"}"))
                 .andExpect(status().isBadRequest())
@@ -189,6 +194,7 @@ class ProductControllerTest {
     @Test
     void updateDoesNotChangeTheRowCount() throws Exception {
         mockMvc.perform(put("/products/2")
+                        .header(HttpHeaders.IF_MATCH, etagOf(2))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"id\": 999, \"name\": \"Renamed\", \"price\": 2.00}"))
                 .andExpect(status().isOk())
@@ -252,5 +258,116 @@ class ProductControllerTest {
                 .andExpect(jsonPath("$.id").isNumber())
                 .andExpect(jsonPath("$.id").value(not(999)))
                 .andExpect(jsonPath("$.createdAt").value(not("2000-01-01T00:00:00Z")));
+    }
+
+    /**
+     * The lost-update scenario, which is the reason any of this exists. Two clients read the
+     * same product, both write; the second write is built on a read that is now stale.
+     * Without If-Match both would answer 200 and the first edit would vanish silently.
+     */
+    @Test
+    void secondWriterWithAStaleEtagIsRejected() throws Exception {
+        String etag = etagOf(5);
+
+        mockMvc.perform(put("/products/5")
+                        .header(HttpHeaders.IF_MATCH, etag)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Headset\", \"price\": 249.00}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(put("/products/5")
+                        .header(HttpHeaders.IF_MATCH, etag)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Headset Pro\", \"price\": 279.00}"))
+                .andExpect(status().isPreconditionFailed())
+                .andExpect(jsonPath("$.title").value("Precondition failed"));
+
+        // The first writer's price survived; the stale write changed nothing.
+        mockMvc.perform(get("/products/5"))
+                .andExpect(jsonPath("$.name").value("Headset"))
+                .andExpect(jsonPath("$.price").value(249.00));
+    }
+
+    @Test
+    void updateWithoutIfMatchIsRefused() throws Exception {
+        mockMvc.perform(put("/products/1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Unconditional\", \"price\": 1.00}"))
+                .andExpect(status().isPreconditionRequired())
+                .andExpect(jsonPath("$.title").value("If-Match required"));
+
+        mockMvc.perform(get("/products/1"))
+                .andExpect(jsonPath("$.name").value("Mechanical Keyboard"));
+    }
+
+    @Test
+    void getCarriesAnEtagAndUpdateReturnsTheNextOne() throws Exception {
+        String before = etagOf(1);
+
+        String after = mockMvc.perform(put("/products/1")
+                        .header(HttpHeaders.IF_MATCH, before)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Bumped\", \"price\": 1.00}"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists(HttpHeaders.ETAG))
+                .andReturn()
+                .getResponse()
+                .getHeader(HttpHeaders.ETAG);
+
+        assertThat(after).isNotEqualTo(before);
+
+        // The ETag the write returned is immediately usable: no re-read needed to edit again.
+        mockMvc.perform(put("/products/1")
+                        .header(HttpHeaders.IF_MATCH, after)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Bumped twice\", \"price\": 2.00}"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void createCarriesAnEtagUsableWithoutAFollowUpRead() throws Exception {
+        String etag = mockMvc.perform(post("/products")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Trackball\", \"price\": 59.95}"))
+                .andExpect(status().isCreated())
+                .andExpect(header().exists(HttpHeaders.ETAG))
+                .andReturn()
+                .getResponse()
+                .getHeader(HttpHeaders.ETAG);
+
+        String location = "/products/" + JsonPath.parse(
+                        mockMvc.perform(get("/products")).andReturn().getResponse().getContentAsString())
+                .read("$[-1].id", Integer.class);
+
+        mockMvc.perform(put(location)
+                        .header(HttpHeaders.IF_MATCH, etag)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Trackball Pro\", \"price\": 69.95}"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void deleteHonoursAStaleIfMatch() throws Exception {
+        String stale = etagOf(7);
+
+        mockMvc.perform(put("/products/7")
+                        .header(HttpHeaders.IF_MATCH, stale)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Moved on\", \"price\": 9.99}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(delete("/products/7").header(HttpHeaders.IF_MATCH, stale))
+                .andExpect(status().isPreconditionFailed());
+
+        mockMvc.perform(get("/products/7")).andExpect(status().isOk());
+    }
+
+    /** Reads a product purely for its ETag, the way any client has to before it can write. */
+    private String etagOf(long id) throws Exception {
+        return mockMvc.perform(get("/products/" + id))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getHeader(HttpHeaders.ETAG);
     }
 }
