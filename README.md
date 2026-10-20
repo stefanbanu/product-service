@@ -90,12 +90,57 @@ curl -X PUT localhost:8081/products/5 -H 'If-Match: "2"' \
 `409` would be right if the version travelled in the request body. The version is **not** a
 field on `ProductResponse` — it is transport metadata, and HTTP already has a header for it.
 
-The enforcement is the database's, not this code's: the expected version is written onto the
-loaded entity, so Spring Data issues `UPDATE ... WHERE id = ? AND version = ?` and a stale
-value matches no row. Comparing versions in Java would be a check-then-act with a window
-between the read and the write.
-
 `DELETE` honours `If-Match` when sent but does not require it.
+
+### How it works: `@Version`
+
+The ETag is a `version` column, maintained by Spring Data JDBC through one annotated field:
+
+```java
+// entity/Product.java
+@Version
+private Long version;                 // org.springframework.data.annotation.Version
+```
+
+With that present, every update Spring Data issues becomes conditional and self-incrementing:
+
+```sql
+UPDATE product SET name = ?, price = ?, version = version + 1
+ WHERE id = ? AND version = ?         -- the version the client asserted
+```
+
+**The enforcement is the database's, not this code's.** `ProductService.update` writes the
+client's expected version onto the loaded entity before saving, which is what arms that
+`WHERE` clause. A stale value matches no row, zero rows affected becomes
+`OptimisticLockingFailureException`, and the service rethrows it as
+`ProductVersionConflictException` so `ApiExceptionHandler` can answer `412`. Comparing the
+two versions in Java instead would be a check-then-act with a window between the read and
+the write — exactly the race being closed.
+
+The round trip, for one product:
+
+```
+GET  /products/5   → ETag: "2"     version column = 2
+PUT  /products/5     If-Match: "2" → WHERE version = 2 matches → version becomes 3, ETag: "3"
+PUT  /products/5     If-Match: "2" → WHERE version = 2 matches nothing → 412
+```
+
+Three consequences worth knowing before touching this:
+
+- **`@Version` changes how new-ness is decided.** Without it, Spring Data treats "id is
+  null" as a new aggregate. With it, the *version* becomes the signal — and **null or zero**
+  both mean new. This is why `create()` leaves version null, and why nothing should ever set
+  it to `0`.
+- **That is also why `003-add-product-version.sql` backfills with `1`, not `0`.** Rows
+  defaulted to zero would be taken for unsaved objects, so the first update of a seeded row
+  would be issued as an `INSERT` and collide on the primary key.
+- **The field is not on `ProductResponse`.** `VersionedProduct` pairs a response with the
+  version it was read at, purely so the controller can build the ETag header. Adding
+  `version` to the DTO would put a bookkeeping integer into the API's data model, which is
+  the thing the ETag approach exists to avoid.
+
+Adding `@Version` to another aggregate later means the same three things: a changeSet for
+the column defaulting to 1, the annotated field, and an `If-Match` contract on its writes.
 
 ## Looking inside the database
 
@@ -160,6 +205,9 @@ The SQL is H2-specific.
   connection closes, which happens between Liquibase finishing and the first request.
 - **`JdbcAuditingConfiguration`** is what fills `@CreatedDate`. Delete it and every insert
   fails on the `NOT NULL` constraint on `created_at`.
+- **`@Version` on `Product` redefines "new".** Null *or zero* makes Spring Data issue an
+  `INSERT` instead of an `UPDATE`, so a row whose version is 0 fails on a duplicate primary
+  key the first time anyone edits it. Never default the column to 0.
 - **Boot 4 split the starters.** `spring-boot-starter-webmvc` is the old `-web`, each slice
   has its own `-test` starter, and auto-configuration lives in per-technology modules —
   hence the explicit `spring-boot-liquibase` and `spring-boot-h2console` dependencies.
